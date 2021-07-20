@@ -25,7 +25,7 @@ These were tested on Ubuntu 14.04 LTS:
 * Install dependencies and build perf_to_profile using bazel
 
   ```
-  git clone https://github.com/google/perf_data_converter.git
+  git clone https://github.com/teslamotors/perf_data_converter.git
   cd perf_data_converter
   bazel build src:perf_to_profile
   ```
