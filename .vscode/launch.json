@@ -1,0 +1,18 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "name": "Debug",
+        "request": "launch",
+        "args": ["-i", "./perf.data", "-o", "prof.proto", "-f", "-j"],
+        "stopAtEntry": false,
+        "preLaunchTask": "Build (Debug)",
+        "externalConsole": false,
+        "type": "cppdbg",
+        "MIMode": "gdb",
+        "program": "${workspaceFolder}/bazel-out/k8-dbg/bin/src/perf_to_profile",
+        "cwd": "${workspaceFolder}",
+        "sourceFileMap" : {"/proc/self/cwd/": "${workspaceFolder}"},
+      }
+    ]
+  }

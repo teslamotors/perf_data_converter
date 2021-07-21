@@ -41,7 +41,7 @@ class PerfDataHandler {
           file_offset(file_offset),
           filename_md5_prefix(filename_md5_prefix) {}
 
-    std::string filename;  // Empty if missing.
+    mutable std::string filename;  // Empty if missing.
     std::string build_id;  // Empty if missing.
     uint64 start;
     uint64 limit;  // limit=ceiling.
