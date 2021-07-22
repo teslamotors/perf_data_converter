@@ -459,16 +459,6 @@ uint64 PerfDataConverter::AddOrGetMapping(const Pid& pid,
     mapping->set_build_id(UTF8StringId(smap->build_id, builder));
   }
   std::string mapping_filename = MappingFilename(smap);
-  
-  for (auto &x : pm) {
-    if (smap->start > x.first) {
-      uint64 end = x.first + x.second.first;
-      if (smap->start > end) {
-        continue;
-      }
-      mapping_filename = x.second.second;
-    }
-  }
   if (!override_filename.empty()) {
     mapping_filename = override_filename;
   }
