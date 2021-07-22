@@ -25,18 +25,18 @@ std::string ReadFileToString(const std::string& path) {
   return ss.str();
 }
 
-perftools::ProcessProfiles StringToProfiles(const std::string& data,
+perftools::ProcessProfiles StringToProfiles(const std::string& data, const std::string& perfmap,
                                             uint32 sample_labels,
                                             uint32 options) {
   // Try to parse it as a PerfDataProto.
   quipper::PerfDataProto perf_data_proto;
   if (perf_data_proto.ParseFromArray(data.data(), data.length())) {
     return perftools::PerfDataProtoToProfiles(&perf_data_proto, sample_labels,
-                                              options);
+                                              options, perfmap);
   }
   // Fallback to reading input as a perf.data file.
   return perftools::RawPerfDataToProfiles(data.data(), data.length(), {},
-                                          sample_labels, options);
+                                          sample_labels, options, perfmap);
 }
 
 void CreateFile(const std::string& path, std::ofstream* file,
@@ -52,7 +52,7 @@ void CreateFile(const std::string& path, std::ofstream* file,
 
 void PrintUsage() {
   LOG(INFO) << "Usage:";
-  LOG(INFO) << "perf_to_profile -i <input perf data> -o <output profile> [-f]";
+  LOG(INFO) << "perf_to_profile -i <input perf data> -o <output profile> -m <input perf map> [-f]";
   LOG(INFO) << "If the -f option is given, overwrite the existing output "
             << "profile.";
   LOG(INFO) << "If the -j option is given, allow unaligned MMAP events "
@@ -61,13 +61,15 @@ void PrintUsage() {
 
 bool ParseArguments(int argc, const char* argv[], std::string* input,
                     std::string* output, bool* overwrite_output,
-                    bool* allow_unaligned_jit_mappings) {
+                    bool* allow_unaligned_jit_mappings, std::string* pm) {
   *input = "";
   *output = "";
   *overwrite_output = false;
   *allow_unaligned_jit_mappings = false;
+  *pm = "";
+
   int opt;
-  while ((opt = getopt(argc, const_cast<char* const*>(argv), ":jfi:o:")) !=
+  while ((opt = getopt(argc, const_cast<char* const*>(argv), ":jfi:o:m:")) !=
          -1) {
     switch (opt) {
       case 'i':
@@ -81,6 +83,9 @@ bool ParseArguments(int argc, const char* argv[], std::string* input,
         break;
       case 'j':
         *allow_unaligned_jit_mappings = true;
+        break;
+      case 'm':
+        *pm = optarg;
         break;
       case ':':
         LOG(ERROR) << "Must provide arguments for flags -i and -o";

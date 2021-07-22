@@ -11,11 +11,11 @@
 #include "src/perf_data_converter.h"
 
 int main(int argc, char** argv) {
-  std::string input, output;
+  std::string input, perfmap, output;
   bool overwriteOutput = false;
   bool allowUnalignedJitMappings = false;
   if (!ParseArguments(argc, const_cast<const char**>(argv), &input, &output,
-                      &overwriteOutput, &allowUnalignedJitMappings)) {
+                      &overwriteOutput, &allowUnalignedJitMappings, &perfmap)) {
     PrintUsage();
     return EXIT_FAILURE;
   }
@@ -25,7 +25,11 @@ int main(int argc, char** argv) {
     options |= perftools::ConversionOptions::kAllowUnalignedJitMappings;
   }
   std::string data = ReadFileToString(input);
-  const auto profiles = StringToProfiles(data, perftools::kNoLabels, options);
+  std::string pmData = std::string();
+  if (perfmap.length() > 1) {
+    pmData = ReadFileToString(perfmap);
+  }
+  const auto profiles = StringToProfiles(data, pmData, perftools::kNoLabels, options);
 
   // With kNoOptions, all of the PID profiles should be merged into a
   // single one.

@@ -197,9 +197,11 @@ class PerfDataConverter : public PerfDataHandler {
   explicit PerfDataConverter(const quipper::PerfDataProto& perf_data,
                              uint32 sample_labels = kNoLabels,
                              uint32 options = kGroupByPids,
+                             const std::string& pmf = std::string(),
                              const std::map<Tid, string>& thread_types = {})
       : perf_data_(perf_data),
         sample_labels_(sample_labels),
+        pm_file(pmf),
         options_(options) {
     for (auto& it : thread_types) {
       thread_types_.insert(std::make_pair(it.first, it.second));
@@ -235,7 +237,7 @@ class PerfDataConverter : public PerfDataHandler {
   // profile, returning the ID of the mapping. It returns 0 to indicate that the
   // mapping was not added (only happens if smap == 0 currently).
   uint64 AddOrGetMapping(const Pid& pid, const PerfDataHandler::Mapping* smap,
-                         ProfileBuilder* builder);
+                         ProfileBuilder* builder, std::string override_filename);
 
   // Returns whether pid labels were requested for inclusion in the
   // profile.proto's Sample.Label field.
@@ -298,6 +300,9 @@ class PerfDataConverter : public PerfDataHandler {
     }
   };
   std::unordered_map<Pid, PerPidInfo> per_pid_;
+
+  std::map<uint64, std::pair<uint64, std::string>> pm;
+  std::string pm_file;
 
   const uint32 sample_labels_;
   const uint32 options_;
@@ -386,7 +391,7 @@ ProfileBuilder* PerfDataConverter::GetOrCreateBuilder(
       fake_main->set_memory_start(0);
       fake_main->set_memory_limit(1);
     } else {
-      AddOrGetMapping(sample.sample.pid(), sample.main_mapping, builder);
+      AddOrGetMapping(sample.sample.pid(), sample.main_mapping, builder, "");
     }
     if (perf_data_.string_metadata().has_perf_version()) {
       string perf_version =
@@ -426,7 +431,8 @@ ProfileBuilder* PerfDataConverter::GetOrCreateBuilder(
 
 uint64 PerfDataConverter::AddOrGetMapping(const Pid& pid,
                                           const PerfDataHandler::Mapping* smap,
-                                          ProfileBuilder* builder) {
+                                          ProfileBuilder* builder, 
+                                          std::string override_filename = std::string()) {
   CHECK(builder != nullptr) << "Cannot add mapping to null builder";
 
   if (smap == nullptr) {
@@ -436,6 +442,9 @@ uint64 PerfDataConverter::AddOrGetMapping(const Pid& pid,
   MappingMap& mapmap = per_pid_[pid].mapping_map;
   auto it = mapmap.find(smap);
   if (it != mapmap.end()) {
+    if (!override_filename.empty()) {
+      it->first->filename = override_filename;
+    }
     return it->second;
   }
 
@@ -449,7 +458,20 @@ uint64 PerfDataConverter::AddOrGetMapping(const Pid& pid,
   if (!smap->build_id.empty()) {
     mapping->set_build_id(UTF8StringId(smap->build_id, builder));
   }
-  string mapping_filename = MappingFilename(smap);
+  std::string mapping_filename = MappingFilename(smap);
+  
+  for (auto &x : pm) {
+    if (smap->start > x.first) {
+      uint64 end = x.first + x.second.first;
+      if (smap->start > end) {
+        continue;
+      }
+      mapping_filename = x.second.second;
+    }
+  }
+  if (!override_filename.empty()) {
+    mapping_filename = override_filename;
+  }
   mapping->set_filename(UTF8StringId(mapping_filename, builder));
   CHECK_LE(mapping->memory_start(), mapping->memory_limit())
       << "Mapping start must be strictly less than its limit: "
@@ -550,23 +572,75 @@ uint64 PerfDataConverter::AddOrGetLocation(
     ProfileBuilder* builder) {
   LocationMap& loc_map = per_pid_[pid].location_map;
   auto loc_it = loc_map.find(addr);
+  if (!pm_file.empty() && pm.empty()) {
+    std::string buf;
+    std::stringstream ss(pm_file);
+
+    std::vector<std::string> lines;
+    while (getline(ss, buf, '\n')) {
+      lines.push_back(buf);
+    }
+    
+    for (auto &line : lines) {
+      std::vector<std::string> tokens;
+      std::stringstream check1(line);
+      std::string intermediate;
+      while(getline(check1, intermediate, ' ')) {
+        tokens.push_back(intermediate);
+      }
+
+      if (tokens.size() > 2) {
+        auto addr = tokens[0];
+
+        uint64 x2 = 0;
+        std::stringstream ss;
+        ss << std::hex << addr;
+        ss >> x2;
+
+        uint64 size = 0;
+        std::stringstream sizes;
+        sizes << std::hex << tokens[1];
+        sizes >> size;
+
+        std::ostringstream imploded;
+        const char* const delim = " ";
+        std::copy(std::next(tokens.cbegin(), 2), tokens.cend(), std::ostream_iterator<std::string>(imploded, delim));
+        pm.insert({x2, std::make_pair(size, imploded.str())});
+      }
+    }
+  }
+
   if (loc_it != loc_map.end()) {
     return loc_it->second;
   }
 
   Profile* profile = builder->mutable_profile();
   perftools::profiles::Location* loc = profile->add_location();
+  
+  std::string real_filename = std::string();
+  for (auto &x : pm) {
+    if (addr > x.first) {
+      uint64 end = x.first + x.second.first;
+      if (addr > end) {
+        continue;
+      }
+      real_filename = x.second.second;
+      break;
+    }
+  }
+
   uint64 loc_id = profile->location_size();
   loc->set_id(loc_id);
   loc->set_address(addr);
-  uint64 mapping_id = AddOrGetMapping(pid, mapping, builder);
+  uint64 mapping_id = AddOrGetMapping(pid, mapping, builder, real_filename);
   if (mapping_id != 0) {
     loc->set_mapping_id(mapping_id);
   } else {
     CHECK(addr == 0) << "Unmapped address in PID " << pid;
   }
   VLOG(2) << "Added location ID=" << loc_id << ", addr=" << addr
-          << ", mapping_id=" << mapping_id;
+          << ", mapping_id=" << mapping_id
+          << ", filename=" << mapping->filename;
   loc_map[addr] = loc_id;
   return loc_id;
 }
@@ -703,8 +777,8 @@ ProcessProfiles PerfDataConverter::Profiles() {
 
 ProcessProfiles PerfDataProtoToProfiles(
     const quipper::PerfDataProto* perf_data, const uint32 sample_labels,
-    const uint32 options, const std::map<Tid, string>& thread_types) {
-  PerfDataConverter converter(*perf_data, sample_labels, options, thread_types);
+    const uint32 options, const std::string& perfmap, const std::map<Tid, string>& thread_types) {
+  PerfDataConverter converter(*perf_data, sample_labels, options, perfmap, thread_types);
   PerfDataHandler::Process(*perf_data, &converter);
   return converter.Profiles();
 }
@@ -712,7 +786,7 @@ ProcessProfiles PerfDataProtoToProfiles(
 ProcessProfiles RawPerfDataToProfiles(
     const void* raw, const int raw_size,
     const std::map<string, string>& build_ids, const uint32 sample_labels,
-    const uint32 options, const std::map<Tid, string>& thread_types) {
+    const uint32 options, const std::string& perfmap, const std::map<Tid, string>& thread_types) {
   quipper::PerfReader reader;
   if (!reader.ReadFromPointer(reinterpret_cast<const char*>(raw), raw_size)) {
     LOG(ERROR) << "Could not read input perf.data";
@@ -744,8 +818,7 @@ ProcessProfiles RawPerfDataToProfiles(
     return ProcessProfiles();
   }
 
-  return PerfDataProtoToProfiles(&reader.proto(), sample_labels, options,
-                                 thread_types);
+  return PerfDataProtoToProfiles(&reader.proto(), sample_labels, options, perfmap, thread_types);
 }
 
 }  // namespace perftools
